@@ -1,0 +1,76 @@
+services:
+  minio:
+    image: minio/minio:latest
+    container_name: blobsearch-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - blobsearch
+
+  createbuckets:
+    image: minio/mc:latest
+    container_name: blobsearch-bucket-creator
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      until /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin; do echo 'Waiting for MinIO...' && sleep 1; done;
+      /usr/bin/mc mb myminio/blobsearch --ignore-existing;
+      /usr/bin/mc admin user svcacct add myminio minioadmin --access-key blobsearch --secret-key blobsearch123 || true;
+      echo 'MinIO bucket created and service account ready';
+      "
+    networks:
+      - blobsearch
+
+  ingestor:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: blobsearch-ingestor
+    ports:
+      - "8080:8080"
+      - "12201:12201"
+    environment:
+      ENDPOINT: http://minio:9000
+      ACCESS_KEY: blobsearch
+      SECRET_KEY: blobsearch123
+      BUCKET: blobsearch
+      REGION: us-east-1
+      PREFIX: logs
+      BATCH_SIZE: "10000"
+      COMPRESSION: snappy
+      WITH_TIMESTAMPS: "true"
+      DEDUPLICATE: "true"
+      DEDUP_WINDOW: "100000"
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/stats"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - blobsearch
+
+volumes:
+  minio_data:
+    driver: local
+
+networks:
+  blobsearch:
+    driver: bridge

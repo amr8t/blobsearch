@@ -1,0 +1,23 @@
+services:
+  # Web app log generator with GELF logging
+  webapp-log-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: webapp-log-app
+    environment:
+      LOG_TYPE: "webapp"
+    logging:
+      driver: gelf
+      options:
+        gelf-address: "tcp://172.17.0.1:12201"
+        tag: "webapp"
+    networks:
+      - blobsearch
+    restart: unless-stopped
+
+networks:
+  blobsearch:
+    # Connect to the harness network
+    external: true
+    name: harness_blobsearch

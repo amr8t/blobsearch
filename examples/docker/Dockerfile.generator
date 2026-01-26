@@ -1,0 +1,23 @@
+FROM golang:1.21-alpine AS builder
+
+WORKDIR /build
+
+# Copy generator source
+COPY generator/ ./
+
+# Build the generator
+RUN go build -o generator .
+
+FROM alpine:latest
+
+WORKDIR /app
+
+# Copy the generator binary
+COPY --from=builder /build/generator /usr/local/bin/generator
+
+# Make it executable
+RUN chmod +x /usr/local/bin/generator
+
+# Default command - generate logs continuously
+ENTRYPOINT ["generator"]
+CMD ["-type", "apache", "-stream", "-delay", "1s"]

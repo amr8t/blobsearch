@@ -1,0 +1,28 @@
+# Compiled binaries
+simple/simple
+http/http
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+
+# Dependency directories
+vendor/
+
+*.todo
+logs_sample.log
+Apache.log
+out/
+in/
+bin/
+generated-*.log
+CLAUDE.md
