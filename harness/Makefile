@@ -1,7 +1,7 @@
 # BlobSearch Makefile
 
 .PHONY: help build test clean docker-up docker-down docker-logs \
-	generate-logs load-logs flush query stats
+	generate-logs load-logs flush query stats stream-start stream-stop stream-logs
 
 .DEFAULT_GOAL := help
 
@@ -52,15 +52,15 @@ docker-logs: ## Show service logs
 ## Log Generation & Loading
 
 generate-logs: ## Generate sample JSON logs (count=1000 days=7)
-	@if [ ! -f ../examples/docker/generator/main.go ]; then \
-		printf "$(YELLOW)Error: generator not found at ../examples/docker/generator/$(NC)\n"; \
+	@if [ ! -f generator/main.go ]; then \
+		printf "$(YELLOW)Error: generator not found at generator/$(NC)\n"; \
 		exit 1; \
 	fi
 	@printf "$(BLUE)Generating JSON logs...$(NC)\n"
-	@cd ../examples/docker/generator && go run main.go \
+	@cd generator && go run main.go \
 		-count $(or $(count),1000) \
 		-days $(or $(days),7) \
-		-output ../../../generated-logs.json
+		-output ../../generated-logs.json
 	@printf "$(GREEN)Generated: ../generated-logs.json$(NC)\n"
 
 load-logs: ## Load logs from file (file=path/to/logs.log)
@@ -105,15 +105,27 @@ query-stats: ## Quick query: show log statistics
 			COUNT(DISTINCT date) as unique_dates \
 		FROM logs;" 2>/dev/null || printf "$(YELLOW)No logs yet. Try: make generate-logs load-logs$(NC)\n"
 
-## Example Applications
+## Stream Logs (Docker Container)
 
-example-up: ## Start example log generator
-	@printf "$(BLUE)Starting example...$(NC)\n"
-	@cd ../examples/docker && docker-compose up -d --force-recreate
-	@printf "$(GREEN)Started! View logs: make example-logs$(NC)\n"
+stream-start: ## Start log generator container (streams to ingestor)
+	@printf "$(BLUE)Starting log generator...$(NC)\n"
+	docker-compose --profile generator up -d log-generator
+	@printf "$(GREEN)Generator started! Streaming logs to ingestor$(NC)\n"
+	@printf "$(YELLOW)View logs: make stream-logs$(NC)\n"
+	@printf "$(YELLOW)Stop: make stream-stop$(NC)\n"
 
-example-down: ## Stop example generator
-	@cd ../examples/docker && docker-compose down
+stream-stop: ## Stop log generator container
+	@printf "$(BLUE)Stopping log generator...$(NC)\n"
+	docker-compose --profile generator stop log-generator
+	docker-compose --profile generator rm -f log-generator
+	@printf "$(GREEN)Generator stopped$(NC)\n"
 
-example-logs: ## Show example logs
-	@cd ../examples/docker && docker-compose logs -f webapp-log-app
+stream-logs: ## Show log generator output
+	docker-compose --profile generator logs -f log-generator
+
+stream-manual: ## Stream logs manually (delay=1s batch=10)
+	@printf "$(BLUE)Streaming logs to ingestor...$(NC)\n"
+	@cd generator && go run main.go -stream \
+		-delay $(or $(delay),1s) \
+		-endpoint http://localhost:8080/ingest \
+		-batch $(or $(batch),10)

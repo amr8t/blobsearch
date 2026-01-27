@@ -109,17 +109,40 @@ LIMIT 10;
 └─────────────┘
 ```
 
+## Production Deployment
+
+### Docker run example
+
+Run ingestor on the host, containers send to host IP:
+
+```bash
+# Run ingestor on host
+docker run -d \
+  --name blobsearch-ingestor \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  -p 12201:12201 \
+  -e ENDPOINT=https://s3.amazonaws.com \
+  -e ACCESS_KEY=your-key \
+  -e SECRET_KEY=your-secret \
+  -e BUCKET=my-logs \
+  -e REGION=us-east-1 \
+  ghcr.io/amr8t/blobsearch/ingestor:latest
+
+# Configure containers to use GELF
+docker run -d \
+  --log-driver=gelf \
+  --log-opt gelf-address=tcp://172.17.0.1:12201 \
+  --log-opt tag=my-app \
+  your-app:latest
+```
+
 ## Docker Compose Example
-
-### GELF Logging Driver
-
-Use Docker's native GELF logging driver
 
 ```yaml
 version: '3.8'
 
 services:
-  # BlobSearch ingestor
   ingestor:
     image: ghcr.io/amr8t/blobsearch/ingestor:latest
     ports:
@@ -132,10 +155,8 @@ services:
       BUCKET: my-logs
       REGION: us-east-1
 
-  # Your application with GELF logging
   app:
     image: your-app:latest
-    container_name: my-app
     logging:
       driver: gelf
       options:
@@ -145,6 +166,68 @@ services:
       - ingestor
 ```
 
+### Kubernetes
+
+Deploy as a DaemonSet so every node runs an ingestor. Containers send logs to `localhost:12201`:
+
+```yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: blobsearch-ingestor
+spec:
+  selector:
+    matchLabels:
+      app: blobsearch-ingestor
+  template:
+    metadata:
+      labels:
+        app: blobsearch-ingestor
+    spec:
+      hostNetwork: true
+      containers:
+      - name: ingestor
+        image: ghcr.io/amr8t/blobsearch/ingestor:latest
+        ports:
+        - containerPort: 12201
+          hostPort: 12201
+        - containerPort: 8080
+          hostPort: 8080
+        env:
+        - name: ENDPOINT
+          value: "https://s3.amazonaws.com"
+        - name: ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: s3-credentials
+              key: access-key
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: s3-credentials
+              key: secret-key
+        - name: BUCKET
+          value: "my-logs"
+        - name: REGION
+          value: "us-east-1"
+```
+
+Configure your pods to use GELF logging:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-app
+spec:
+  containers:
+  - name: app
+    image: your-app:latest
+    # Docker GELF driver configuration
+    # Add to docker daemon.json or use logging sidecar
+```
+
+**Note:** Configure Docker daemon on nodes with GELF driver pointing to `tcp://127.0.0.1:12201`
 
 
 ## Configuration
@@ -362,8 +445,12 @@ duckdb -c "
 ## Documentation
 
 - **[QUERY_GUIDE.md](QUERY_GUIDE.md)** - Advanced querying and performance optimization
-- **[harness/README.md](harness/README.md)** - Development environment
-- **[examples/docker/README.md](examples/docker/README.md)** - Example applications
+- **[harness/README.md](harness/README.md)** - Development/Testing environment
+
+## Examples
+
+- **[examples/standalone-docker/](examples/standalone-docker/)** - Simple Docker Compose with pre-built image
+- **[examples/kubernetes/](examples/kubernetes/)** - Ultra-simple Kubernetes DaemonSet example
 
 ## Contributing
 

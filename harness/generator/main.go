@@ -3,10 +3,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"math/rand"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -19,6 +22,8 @@ var (
 	delay     = flag.Duration("delay", 1*time.Second, "Delay between logs in stream mode (e.g., 100ms, 1s, 2s)")
 	startDate = flag.String("start-date", "", "Start date for log timestamps (format: 2006-01-02, default: today)")
 	days      = flag.Int("days", 1, "Number of days to span logs across")
+	endpoint  = flag.String("endpoint", "", "HTTP endpoint to POST logs to (e.g., http://localhost:8080/ingest)")
+	batch     = flag.Int("batch", 1, "Number of logs to batch together before sending (only with -endpoint)")
 )
 
 func usage() {
@@ -41,6 +46,10 @@ func usage() {
 	fmt.Fprintf(os.Stderr, "  %s -stream -delay 500ms\n\n", os.Args[0])
 	fmt.Fprintf(os.Stderr, "  # Pipe directly to ingestor\n")
 	fmt.Fprintf(os.Stderr, "  %s -count 10000 | curl -X POST --data-binary @- http://localhost:8080/ingest\n\n", os.Args[0])
+	fmt.Fprintf(os.Stderr, "  # Stream logs directly to HTTP endpoint\n")
+	fmt.Fprintf(os.Stderr, "  %s -stream -delay 500ms -endpoint http://localhost:8080/ingest\n\n", os.Args[0])
+	fmt.Fprintf(os.Stderr, "  # POST logs in batches\n")
+	fmt.Fprintf(os.Stderr, "  %s -count 10000 -endpoint http://localhost:8080/ingest -batch 100\n\n", os.Args[0])
 }
 
 func main() {
@@ -86,6 +95,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Generating JSON logs...\n")
 	}
 
+	// HTTP endpoint mode
+	if *endpoint != "" {
+		if *stream {
+			streamToHTTP(generator, *endpoint, *delay, *batch)
+		} else {
+			batchToHTTP(generator, *endpoint, *count, *batch)
+		}
+		return
+	}
+
+	// File/stdout mode
 	if *stream {
 		// Stream mode: generate logs continuously
 		fmt.Fprintf(os.Stderr, "Stream mode: generating logs every %v (Ctrl+C to stop)\n", *delay)
@@ -113,6 +133,75 @@ func main() {
 		}
 		fmt.Fprintf(os.Stderr, "Successfully generated %d JSON logs\n", *count)
 	}
+}
+
+// streamToHTTP continuously generates and POSTs logs to HTTP endpoint
+func streamToHTTP(generator *LogGenerator, endpoint string, delay time.Duration, batchSize int) {
+	fmt.Fprintf(os.Stderr, "Streaming logs to %s every %v (batch size: %d)\n", endpoint, delay, batchSize)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	generated := 0
+	buffer := &bytes.Buffer{}
+
+	for {
+		// Generate batch
+		for i := 0; i < batchSize; i++ {
+			log := generator.Generate()
+			buffer.WriteString(log)
+			buffer.WriteString("\n")
+		}
+
+		// POST to endpoint
+		resp, err := client.Post(endpoint, "application/json", buffer)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error posting to %s: %v\n", endpoint, err)
+		} else {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			generated += batchSize
+
+			if generated%100 == 0 {
+				fmt.Fprintf(os.Stderr, "Posted %d logs to %s\n", generated, endpoint)
+			}
+		}
+
+		buffer.Reset()
+		time.Sleep(delay)
+	}
+}
+
+// batchToHTTP generates fixed count of logs and POSTs in batches
+func batchToHTTP(generator *LogGenerator, endpoint string, count, batchSize int) {
+	fmt.Fprintf(os.Stderr, "Posting %d logs to %s (batch size: %d)\n", count, endpoint, batchSize)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	buffer := &bytes.Buffer{}
+	posted := 0
+
+	for i := 0; i < count; i++ {
+		log := generator.Generate()
+		buffer.WriteString(log)
+		buffer.WriteString("\n")
+
+		// Send batch when full or at end
+		if (i+1)%batchSize == 0 || i == count-1 {
+			resp, err := client.Post(endpoint, "application/json", buffer)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error posting to %s: %v\n", endpoint, err)
+			} else {
+				io.Copy(io.Discard, resp.Body)
+				resp.Body.Close()
+				posted += buffer.Len()
+			}
+			buffer.Reset()
+
+			if (i+1)%1000 == 0 {
+				fmt.Fprintf(os.Stderr, "Posted %d/%d logs...\n", i+1, count)
+			}
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "Successfully posted %d logs to %s\n", count, endpoint)
 }
 
 // LogGenerator generates OpenTelemetry-compliant structured JSON logs

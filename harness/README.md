@@ -2,19 +2,17 @@
 
 This directory contains development and testing infrastructure for BlobSearch.
 
-**For production deployment, see the main [README.md](../README.md) and [QUICKSTART.md](../QUICKSTART.md).**
+**For production deployment, see the main [README.md](../README.md).**
 
 ## What's Here
 
 This harness provides:
 - **MinIO** - Local S3-compatible storage for testing
 - **BlobSearch Ingestor** - Built from source
-- **Example Log Generators** - Apache and OTel log producers
+- **Log Generator** - Go-based structured log generator
 - **Makefile** - Development commands
 
 ## Quick Start
-
-From the project root:
 
 ```bash
 # Start the dev harness
@@ -22,8 +20,8 @@ cd harness
 make docker-up
 
 # Generate and load test logs
-make generate-logs type=apache count=10000 days=7
-make load-logs file=../generated-apache.log
+make generate-logs count=10000 days=7
+make load-logs file=../generated-logs.json
 
 # Query
 make query-stats
@@ -60,12 +58,20 @@ make docker-logs    # View service logs
 ### Log Generation & Loading
 
 ```bash
-# Generate logs
-make generate-logs type=apache count=1000 days=7
-make generate-logs type=otel count=5000 days=30
+# Generate logs to file (OpenTelemetry format)
+make generate-logs count=1000 days=7
+make generate-logs count=5000 days=30
 
-# Load logs
-make load-logs file=path/to/logs.log
+# Stream logs continuously (Docker container)
+make stream-start       # Start streaming logs to ingestor
+make stream-logs        # View generator output
+make stream-stop        # Stop streaming
+
+# Stream logs manually (without Docker)
+make stream-manual delay=500ms batch=10
+
+# Load logs from file
+make load-logs file=path/to/logs.json
 
 # Flush and view stats
 make flush
@@ -79,23 +85,18 @@ make query          # Start DuckDB with connection
 make query-stats    # Quick statistics query
 ```
 
-### Examples
 
-```bash
-# Run example log generators with forwarders
-make example-up profile=apache
-make example-up profile=webapp
-make example-down
-make example-logs profile=apache
-```
 
 ## Directory Structure
 
 ```
 harness/
-├── docker-compose.yml   # MinIO + Ingestor + Examples
-├── Makefile            # Dev commands
-└── README.md           # This file
+├── docker-compose.yml      # MinIO + Ingestor
+├── Dockerfile.generator    # Log generator image
+├── generator/              # Go log generator source
+│   └── main.go
+├── Makefile               # Dev commands
+└── README.md              # This file
 ```
 
 ## Development Workflow
@@ -123,30 +124,33 @@ docker-compose up -d ingestor
 ### 4. Test with Sample Data
 
 ```bash
-# Generate test logs
-make generate-logs type=apache count=10000 days=7
+# Generate test logs (OpenTelemetry format)
+make generate-logs count=10000 days=7
 
 # Load them
-make load-logs file=../generated-apache.log
+make load-logs file=../generated-logs.json
 
 # Query results
 make query-stats
 ```
 
-### 5. Run Full Example
+### 5. Stream Logs in Real-Time
 
 ```bash
-# Start example generator with forwarder
-make example-up profile=apache
+# Start log generator container (streams continuously)
+make stream-start
 
-# Watch logs being forwarded
-make example-logs profile=apache
+# Monitor logs in another terminal
+make stream-logs
 
-# Query the ingested data
+# Watch stats in another terminal
+watch -n 1 'curl -s http://localhost:8080/stats | jq'
+
+# Stop streaming
+make stream-stop
+
+# Query the accumulated data
 make query-stats
-
-# Clean up
-make example-down
 ```
 
 ## Testing Different Configurations
@@ -155,10 +159,10 @@ make example-down
 
 ```bash
 # Generate large dataset
-make generate-logs type=apache count=100000 days=30
+make generate-logs count=100000 days=30
 
 # Load it
-make load-logs file=../generated-apache.log
+make load-logs file=../generated-logs.json
 
 # Monitor performance
 make stats
@@ -195,14 +199,14 @@ ingestor:
 
 ```bash
 # Generate logs across multiple months
-make generate-logs type=otel count=50000 days=90
+make generate-logs count=50000 days=90
 
 # Load and query specific date ranges
-make load-logs file=../generated-otel.log
+make load-logs file=../generated-logs.json
 make flush
 
-# Query in DuckDB
-duckdb
+# Query in DuckDB with date filtering
+make query
 ```
 
 ```sql
@@ -259,11 +263,13 @@ make docker-up
 
 ```bash
 # Verify generator exists
-ls -la ../examples/docker/generator/main.go
+ls -la generator/main.go
 
-# Build it manually
-cd ../examples/docker/generator
-go build -o ../../../harness/generator .
+# Test it directly
+cd generator && go run main.go -count 10 -output test.json
+
+# Test streaming to ingestor
+cd generator && go run main.go -stream -delay 1s -endpoint http://localhost:8080/ingest -batch 10
 ```
 
 ### Ingestor Not Responding
@@ -305,13 +311,14 @@ duckdb -c "
 **Harness (this directory):**
 - For development and testing only
 - Includes MinIO for local S3 storage
-- All-in-one docker-compose
+- Builds ingestor from source
+- Includes log generator
 - Development Makefile
 
-**Production (main README):**
-- Users provide their own S3 (AWS S3, MinIO, etc.)
-- Pull pre-built images from ghcr.io
-- Configure via environment variables
+**Production (see examples/):**
+- **standalone-docker/** - Docker Compose with pre-built images
+- **kubernetes/** - Kubernetes DaemonSet pattern
+- Uses real S3 or MinIO
 - Minimal setup
 
 ## Contributing
@@ -325,8 +332,43 @@ When developing new features:
 5. Update documentation
 6. Run `make test` before committing
 
+## Generator Usage
+
+The log generator supports multiple modes:
+
+```bash
+# Generate to file
+cd generator
+go run main.go -count 1000 -output logs.json
+
+# Generate specific date range
+go run main.go -count 5000 -days 30 -start-date 2024-01-01 -output logs.json
+
+# Stream to stdout
+go run main.go -stream -delay 500ms
+
+# Stream directly to HTTP endpoint
+go run main.go -stream -delay 1s -endpoint http://localhost:8080/ingest -batch 10
+
+# Batch POST to endpoint
+go run main.go -count 10000 -endpoint http://localhost:8080/ingest -batch 100
+```
+
+**Docker Mode:**
+```bash
+# Start generator container (streams to ingestor)
+make stream-start
+
+# View logs
+make stream-logs
+
+# Stop generator
+make stream-stop
+```
+
 ## See Also
 
-- [Main README](../README.md) - Production deployment
-- [QUICKSTART](../QUICKSTART.md) - End-user setup
-- [QUERY_GUIDE](../QUERY_GUIDE.md) - Advanced querying
+- [Main README](../README.md) - Overview and features
+- [examples/standalone-docker/](../examples/standalone-docker/) - Simple Docker setup
+- [examples/kubernetes/](../examples/kubernetes/) - Kubernetes deployment
+- [QUERY_GUIDE.md](../QUERY_GUIDE.md) - Advanced querying

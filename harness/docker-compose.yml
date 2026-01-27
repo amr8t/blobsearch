@@ -67,6 +67,34 @@ services:
     networks:
       - blobsearch
 
+  # Log generator - streams logs continuously to ingestor
+  log-generator:
+    build:
+      context: .
+      dockerfile: Dockerfile.generator
+    container_name: blobsearch-log-generator
+    command:
+      [
+        "-stream",
+        "-delay",
+        "1s",
+        "-endpoint",
+        "http://ingestor:8080/ingest",
+        "-batch",
+        "10",
+      ]
+    environment:
+      - GENERATOR_DELAY=1s
+      - GENERATOR_BATCH=10
+    depends_on:
+      ingestor:
+        condition: service_healthy
+    networks:
+      - blobsearch
+    profiles:
+      - generator
+    restart: unless-stopped
+
 volumes:
   minio_data:
     driver: local

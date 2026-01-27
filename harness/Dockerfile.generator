@@ -18,6 +18,6 @@ COPY --from=builder /build/generator /usr/local/bin/generator
 # Make it executable
 RUN chmod +x /usr/local/bin/generator
 
-# Default command - generate logs continuously
+# Default command - stream logs to ingestor
 ENTRYPOINT ["generator"]
-CMD ["-type", "apache", "-stream", "-delay", "1s"]
+CMD ["-stream", "-delay", "1s", "-endpoint", "http://ingestor:8080/ingest", "-batch", "10"]

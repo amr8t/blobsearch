@@ -1,0 +1,47 @@
+# Standalone Example - Uses pre-built image from GitHub
+# Simple setup with real S3 or MinIO
+
+services:
+  # MinIO for local S3 (optional - use real S3 instead)
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+
+  # BlobSearch ingestor (pre-built from GitHub)
+  ingestor:
+    image: ghcr.io/amr8t/blobsearch/ingestor:latest
+    ports:
+      - "8080:8080"
+      - "12201:12201"
+    environment:
+      # For MinIO (local)
+      ENDPOINT: http://minio:9000
+      ACCESS_KEY: minioadmin
+      SECRET_KEY: minioadmin
+      BUCKET: logs
+      REGION: us-east-1
+      # For AWS S3 (uncomment and comment MinIO settings above)
+      # ENDPOINT: https://s3.amazonaws.com
+      # ACCESS_KEY: your-aws-key
+      # SECRET_KEY: your-aws-secret
+      # BUCKET: your-bucket
+      # REGION: us-east-1
+    depends_on:
+      - minio
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/stats"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  minio_data:

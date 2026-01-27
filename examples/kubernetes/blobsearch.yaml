@@ -1,0 +1,155 @@
+# Ultra-Simple Kubernetes Example
+# Deploy BlobSearch as DaemonSet - one ingestor per node
+
+---
+# MinIO for local testing (optional - comment out for AWS S3)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: minio
+  namespace: default
+  labels:
+    app: minio
+spec:
+  containers:
+    - name: minio
+      image: minio/minio:latest
+      args:
+        - server
+        - /data
+      ports:
+        - containerPort: 9000
+      env:
+        - name: MINIO_ROOT_USER
+          value: minioadmin
+        - name: MINIO_ROOT_PASSWORD
+          value: minioadmin
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: default
+spec:
+  selector:
+    app: minio
+  ports:
+    - port: 9000
+      targetPort: 9000
+
+---
+# Secret for S3 credentials
+apiVersion: v1
+kind: Secret
+metadata:
+  name: blobsearch-s3
+  namespace: default
+type: Opaque
+stringData:
+  # For MinIO (local testing)
+  access-key: "minioadmin"
+  secret-key: "minioadmin"
+  # For AWS S3 (production)
+  # access-key: "your-access-key-here"
+  # secret-key: "your-secret-key-here"
+
+---
+# DaemonSet - runs on every node
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: blobsearch-ingestor
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: blobsearch
+  template:
+    metadata:
+      labels:
+        app: blobsearch
+    spec:
+      containers:
+        - name: ingestor
+          image: ghcr.io/amr8t/blobsearch/ingestor:latest
+          ports:
+            - containerPort: 12201
+              hostPort: 12201
+              protocol: TCP
+            - containerPort: 8080
+              hostPort: 8080
+              protocol: TCP
+          env:
+            - name: ENDPOINT
+              value: "http://minio.default.svc.cluster.local:9000" # For MinIO
+              # value: "https://s3.amazonaws.com"  # For AWS S3
+            - name: ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: blobsearch-s3
+                  key: access-key
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: blobsearch-s3
+                  key: secret-key
+            - name: BUCKET
+              value: "logs"
+            - name: REGION
+              value: "us-east-1"
+          resources:
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+
+---
+# Service to expose ingestor
+apiVersion: v1
+kind: Service
+metadata:
+  name: blobsearch-ingestor
+  namespace: default
+spec:
+  type: NodePort
+  selector:
+    app: blobsearch
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30080
+    - name: gelf
+      port: 12201
+      targetPort: 12201
+      nodePort: 30201
+
+---
+# Example pod with GELF logging
+# Note: You need to configure Docker daemon on nodes with GELF driver
+# OR use a logging sidecar
+apiVersion: v1
+kind: Pod
+metadata:
+  name: example-app
+  namespace: default
+spec:
+  containers:
+    - name: app
+      image: busybox
+      command:
+        [
+          "sh",
+          "-c",
+          'while true; do echo ''{"level":"info","message":"Hello"}''; sleep 2; done',
+        ]
+      # Docker GELF logging is configured at Docker daemon level
+      # Add to /etc/docker/daemon.json on nodes:
+      # {
+      #   "log-driver": "gelf",
+      #   "log-opts": {
+      #     "gelf-address": "tcp://127.0.0.1:12201"
+      #   }
+      # }
