@@ -34,6 +34,14 @@ services:
       # SECRET_KEY: your-aws-secret
       # BUCKET: your-bucket
       # REGION: us-east-1
+
+      # Optional: Auto-flush configuration
+      AUTO_FLUSH: "true"
+      AUTO_FLUSH_INTERVAL: "90" # seconds
+
+      # Optional: Deduplication
+      # DEDUPLICATE: "true"
+      # DEDUP_WINDOW: "100000"
     depends_on:
       - minio
     healthcheck:

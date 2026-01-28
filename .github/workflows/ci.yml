@@ -36,9 +36,6 @@ jobs:
       - name: Build ingestor
         run: go build -o bin/ingestor ./cmd/ingestor
 
-      - name: Build generator
-        run: go build -o bin/generator ./examples/docker/generator
-
   docker-build:
     runs-on: ubuntu-latest
     steps:
@@ -68,5 +65,4 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- Go tests: Passed" >> $GITHUB_STEP_SUMMARY
           echo "- Ingestor build: Success" >> $GITHUB_STEP_SUMMARY
-          echo "- Generator build: Success" >> $GITHUB_STEP_SUMMARY
           echo "- Docker images: Built" >> $GITHUB_STEP_SUMMARY

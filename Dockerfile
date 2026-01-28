@@ -38,6 +38,8 @@ ENV BUCKET=blobsearch \
     WITH_TIMESTAMPS=true \
     DEDUPLICATE=false \
     DEDUP_WINDOW=100000 \
+    AUTO_FLUSH=true \
+    AUTO_FLUSH_INTERVAL=90 \
     HTTP_PORT=8080
 
 # Expose ports (HTTP and GELF TCP)

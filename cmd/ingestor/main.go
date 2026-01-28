@@ -28,20 +28,22 @@ import (
 )
 
 var (
-	bucket        = flag.String("bucket", "", "S3 bucket name or local directory")
-	prefix        = flag.String("prefix", "logs", "S3 prefix for log files")
-	batchSize     = flag.Int("batch-size", 10000, "Number of log entries per parquet file")
-	compression   = flag.String("compression", "snappy", "Compression algorithm (snappy, gzip, none)")
-	localFile     = flag.Bool("local", false, "Write to local files instead of S3")
-	logTimestamps = flag.Bool("with-timestamps", false, "Parse and include timestamps from logs")
-	endpoint      = flag.String("endpoint", "", "Custom S3 endpoint (for MinIO/local S3)")
-	accessKey     = flag.String("access-key", "", "AWS access key (for custom endpoint)")
-	secretKey     = flag.String("secret-key", "", "AWS secret key (for custom endpoint)")
-	region        = flag.String("region", "us-east-1", "AWS region")
-	httpMode      = flag.Bool("http", false, "Run as HTTP server")
-	httpPort      = flag.String("port", "8080", "HTTP server port")
-	deduplicate   = flag.Bool("deduplicate", false, "Enable deduplication (keeps only unique logs)")
-	dedupWindow   = flag.Int("dedup-window", 100000, "Number of recent hashes to keep for deduplication")
+	bucket            = flag.String("bucket", "", "S3 bucket name or local directory")
+	prefix            = flag.String("prefix", "logs", "S3 prefix for log files")
+	batchSize         = flag.Int("batch-size", 10000, "Number of log entries per parquet file")
+	compression       = flag.String("compression", "snappy", "Compression algorithm (snappy, gzip, none)")
+	localFile         = flag.Bool("local", false, "Write to local files instead of S3")
+	logTimestamps     = flag.Bool("with-timestamps", false, "Parse and include timestamps from logs")
+	endpoint          = flag.String("endpoint", "", "Custom S3 endpoint (for MinIO/local S3)")
+	accessKey         = flag.String("access-key", "", "AWS access key (for custom endpoint)")
+	secretKey         = flag.String("secret-key", "", "AWS secret key (for custom endpoint)")
+	region            = flag.String("region", "us-east-1", "AWS region")
+	httpMode          = flag.Bool("http", false, "Run as HTTP server")
+	httpPort          = flag.String("port", "8080", "HTTP server port")
+	deduplicate       = flag.Bool("deduplicate", false, "Enable deduplication (keeps only unique logs)")
+	dedupWindow       = flag.Int("dedup-window", 100000, "Number of recent hashes to keep for deduplication")
+	autoFlush         = flag.Bool("auto-flush", true, "Enable automatic periodic flushing")
+	autoFlushInterval = flag.Int("auto-flush-interval", 90, "Auto-flush interval in seconds")
 )
 
 // LogEntry represents a log entry that will be written to Parquet
@@ -169,6 +171,8 @@ type LogIngestor struct {
 	dedupCache       *DedupCache
 	duplicateCount   int64
 	mu               sync.Mutex
+	stopAutoFlush    chan struct{}
+	autoFlushStopped chan struct{}
 }
 
 func NewLogIngestor(s3Client *s3.Client) *LogIngestor {
@@ -178,7 +182,7 @@ func NewLogIngestor(s3Client *s3.Client) *LogIngestor {
 		log.Printf("Deduplication enabled (window size: %d)", *dedupWindow)
 	}
 
-	return &LogIngestor{
+	li := &LogIngestor{
 		partitionTracker: NewPartitionTracker(),
 		s3Client:         s3Client,
 		batch: &BatchInfo{
@@ -187,11 +191,21 @@ func NewLogIngestor(s3Client *s3.Client) *LogIngestor {
 			EndTime:     time.Now(),
 			BatchNumber: 0,
 		},
-		batchNumber:    0,
-		lineCount:      0,
-		dedupCache:     dedupCache,
-		duplicateCount: 0,
+		batchNumber:      0,
+		lineCount:        0,
+		dedupCache:       dedupCache,
+		duplicateCount:   0,
+		stopAutoFlush:    make(chan struct{}),
+		autoFlushStopped: make(chan struct{}),
 	}
+
+	// Start auto-flush goroutine if enabled
+	if *autoFlush {
+		log.Printf("Auto-flush enabled (interval: %d seconds)", *autoFlushInterval)
+		go li.autoFlushWorker()
+	}
+
+	return li
 }
 
 func (li *LogIngestor) computeContentHash(message string, timestamp time.Time) string {
@@ -286,6 +300,34 @@ func (li *LogIngestor) Flush() error {
 	li.mu.Lock()
 	defer li.mu.Unlock()
 	return li.flushBatch()
+}
+
+func (li *LogIngestor) autoFlushWorker() {
+	ticker := time.NewTicker(time.Duration(*autoFlushInterval) * time.Second)
+	defer ticker.Stop()
+	defer close(li.autoFlushStopped)
+
+	for {
+		select {
+		case <-ticker.C:
+			if err := li.Flush(); err != nil {
+				log.Printf("Auto-flush error: %v", err)
+			} else {
+				log.Printf("Auto-flush completed")
+			}
+		case <-li.stopAutoFlush:
+			log.Printf("Auto-flush worker stopping")
+			return
+		}
+	}
+}
+
+func (li *LogIngestor) Stop() {
+	if *autoFlush {
+		close(li.stopAutoFlush)
+		<-li.autoFlushStopped
+	}
+	li.Flush()
 }
 
 func (li *LogIngestor) GetStats() (lineCount int64, partitionCount int, duplicateCount int64, uniqueCount int64) {
@@ -556,90 +598,28 @@ func runHTTPServer(s3Client *s3.Client) {
 }
 
 func runStdinMode(s3Client *s3.Client) {
-	partitionTracker := NewPartitionTracker()
-
-	// Initialize batch
-	batchNumber := 0
-	batch := &BatchInfo{
-		Entries:     make([]LogEntry, 0, *batchSize),
-		StartTime:   time.Now(),
-		EndTime:     time.Now(),
-		BatchNumber: batchNumber,
-	}
+	ingestor := NewLogIngestor(s3Client)
+	defer ingestor.Stop()
 
 	// Read from stdin
 	scanner := bufio.NewScanner(os.Stdin)
-	lineCount := int64(0)
 
 	fmt.Println("Starting log ingestion...")
 	fmt.Println("Reading from stdin, press Ctrl+D to finish...")
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		lineCount++
-
-		// Parse timestamp if enabled
-		var timestamp time.Time
-		if *logTimestamps {
-			timestamp = parseTimestamp(line)
-		} else {
-			timestamp = time.Now()
+		if line == "" {
+			continue
 		}
 
-		// Compute content hash
-		h := sha256.New()
-		h.Write([]byte(line))
-		h.Write([]byte(timestamp.Format(time.RFC3339Nano)))
-		contentHash := fmt.Sprintf("%x", h.Sum(nil))[:16]
-
-		// Extract log level
-		level := extractLevel(line)
-
-		// Create log entry
-		entry := LogEntry{
-			Timestamp:   timestamp,
-			Message:     line,
-			Level:       level,
-			LineNumber:  lineCount,
-			ContentHash: contentHash,
+		if err := ingestor.ProcessLine(line); err != nil {
+			log.Printf("Error processing line: %v", err)
 		}
 
-		// Track partition for this entry
-		partitionTracker.UpdatePartition(entry)
-
-		// Update batch time range
-		if timestamp.Before(batch.StartTime) {
-			batch.StartTime = timestamp
-		}
-		if timestamp.After(batch.EndTime) {
-			batch.EndTime = timestamp
-		}
-
-		batch.Entries = append(batch.Entries, entry)
-
-		// Flush batch if full
-		if len(batch.Entries) >= *batchSize {
-			if err := flushBatch(batch, s3Client); err != nil {
-				log.Printf("Error flushing batch: %v", err)
-			}
-			batchNumber++
-			batch = &BatchInfo{
-				Entries:     make([]LogEntry, 0, *batchSize),
-				StartTime:   time.Now(),
-				EndTime:     time.Now(),
-				BatchNumber: batchNumber,
-			}
-		}
-
+		lineCount, _, _, _ := ingestor.GetStats()
 		if lineCount%10000 == 0 {
 			fmt.Printf("Processed %d lines...\n", lineCount)
-		}
-	}
-
-	// Flush remaining entries
-	if len(batch.Entries) > 0 {
-		if err := flushBatch(batch, s3Client); err != nil {
-			log.Printf("Error flushing final batch: %v", err)
 		}
 	}
 
@@ -647,9 +627,14 @@ func runStdinMode(s3Client *s3.Client) {
 		log.Fatalf("Error reading input: %v", err)
 	}
 
+	lineCount, partitionCount, duplicateCount, uniqueCount := ingestor.GetStats()
 	fmt.Printf("\nIngestion complete!\n")
 	fmt.Printf("Total lines processed: %d\n", lineCount)
-	fmt.Printf("Total partitions created: %d\n", partitionTracker.GetPartitionCount())
+	fmt.Printf("Unique lines: %d\n", uniqueCount)
+	if *deduplicate {
+		fmt.Printf("Duplicates skipped: %d\n", duplicateCount)
+	}
+	fmt.Printf("Total partitions created: %d\n", partitionCount)
 }
 
 func flushBatch(batch *BatchInfo, s3Client *s3.Client) error {

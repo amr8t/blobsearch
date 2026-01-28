@@ -97,6 +97,15 @@ spec:
               value: "logs"
             - name: REGION
               value: "us-east-1"
+            - name: AUTO_FLUSH
+              value: "true"
+            - name: AUTO_FLUSH_INTERVAL
+              value: "90"
+            # Optional: Enable deduplication
+            # - name: DEDUPLICATE
+            #   value: "true"
+            # - name: DEDUP_WINDOW
+            #   value: "100000"
           resources:
             limits:
               memory: "512Mi"
