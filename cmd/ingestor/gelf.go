@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -55,21 +57,27 @@ func (g *GELFMessage) UnmarshalJSON(data []byte) error {
 
 // ProcessGELF processes a GELF message and converts it to a standard log entry
 func (li *LogIngestor) ProcessGELF(gelf GELFMessage) error {
-	// Convert GELF level (0-7 syslog levels) to standard log levels
-	levelStr := "info"
-	switch gelf.Level {
-	case 0, 1, 2: // Emergency, Alert, Critical
-		levelStr = "error"
-	case 3: // Error
-		levelStr = "error"
-	case 4: // Warning
-		levelStr = "warn"
-	case 5: // Notice
-		levelStr = "info"
-	case 6: // Informational
-		levelStr = "info"
-	case 7: // Debug
-		levelStr = "debug"
+	// Try to parse level from the actual log message first (for JSON or structured logs)
+	levelStr := parseLevelFromMessage(gelf.ShortMessage)
+
+	// If we couldn't parse from message, fall back to GELF level (syslog 0-7)
+	if levelStr == "" {
+		switch gelf.Level {
+		case 0, 1, 2: // Emergency, Alert, Critical
+			levelStr = "error"
+		case 3: // Error
+			levelStr = "error"
+		case 4: // Warning
+			levelStr = "warn"
+		case 5: // Notice
+			levelStr = "info"
+		case 6: // Informational
+			levelStr = "info"
+		case 7: // Debug
+			levelStr = "debug"
+		default:
+			levelStr = "info"
+		}
 	}
 
 	// Build structured log entry from GELF
@@ -114,6 +122,58 @@ func (li *LogIngestor) ProcessGELF(gelf GELFMessage) error {
 	}
 
 	return li.ProcessLine(string(jsonBytes))
+}
+
+// parseLevelFromMessage attempts to extract log level from message content
+// Handles both JSON logs and structured text (logrus format)
+// Returns empty string if no level found
+func parseLevelFromMessage(message string) string {
+	// Try 1: Check if message is JSON and extract "level" field
+	if strings.HasPrefix(message, "{") {
+		var logData map[string]interface{}
+		if err := json.Unmarshal([]byte(message), &logData); err == nil {
+			if level, ok := logData["level"].(string); ok {
+				level = strings.ToLower(level)
+				// Normalize variations
+				switch level {
+				case "warning":
+					return "warn"
+				case "err":
+					return "error"
+				case "trace":
+					return "debug"
+				case "fatal", "panic", "critical":
+					return "error"
+				case "error", "warn", "info", "debug":
+					return level
+				}
+			}
+		}
+	}
+
+	// Try 2: Check for logrus text format: level=info
+	if strings.Contains(message, "level=") {
+		re := regexp.MustCompile(`level=(\w+)`)
+		matches := re.FindStringSubmatch(message)
+		if len(matches) > 1 {
+			level := strings.ToLower(matches[1])
+			// Normalize variations
+			switch level {
+			case "warning":
+				return "warn"
+			case "err":
+				return "error"
+			case "trace":
+				return "debug"
+			case "fatal", "panic", "critical":
+				return "error"
+			case "error", "warn", "info", "debug":
+				return level
+			}
+		}
+	}
+
+	return ""
 }
 
 // StartGELFTCPServer starts a TCP server to receive GELF messages from Docker logging driver
