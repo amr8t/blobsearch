@@ -29,6 +29,8 @@ CMD="$CMD -compression=$COMPRESSION"
 CMD="$CMD -with-timestamps=$WITH_TIMESTAMPS"
 CMD="$CMD -deduplicate=$DEDUPLICATE"
 CMD="$CMD -dedup-window=$DEDUP_WINDOW"
+CMD="$CMD -auto-flush=$AUTO_FLUSH"
+CMD="$CMD -auto-flush-interval=$AUTO_FLUSH_INTERVAL"
 
 # Execute the command
 exec $CMD

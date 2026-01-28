@@ -55,6 +55,8 @@ services:
       WITH_TIMESTAMPS: "true"
       DEDUPLICATE: "true"
       DEDUP_WINDOW: "100000"
+      AUTO_FLUSH: "true"
+      AUTO_FLUSH_INTERVAL: "30"
     depends_on:
       minio:
         condition: service_healthy

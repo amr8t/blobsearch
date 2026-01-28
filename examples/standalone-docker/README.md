@@ -58,6 +58,36 @@ open http://localhost:9001
 # Login: minioadmin / minioadmin
 ```
 
+## Configuration
+
+### Auto-Flush (Default: Enabled)
+
+Logs are automatically flushed to S3 every 90 seconds by default. To customize:
+
+Edit `docker-compose.yml`:
+
+```yaml
+ingestor:
+  environment:
+    AUTO_FLUSH: "true"
+    AUTO_FLUSH_INTERVAL: "90"  # seconds
+```
+
+Or disable and use manual flush only:
+
+```yaml
+ingestor:
+  environment:
+    AUTO_FLUSH: "false"
+```
+
+Then manually flush when needed:
+```bash
+curl -X POST http://localhost:8080/flush
+```
+
+See [Auto-Flush Guide](../AUTO_FLUSH_GUIDE.md) for detailed configuration options.
+
 ## Using AWS S3 Instead of MinIO
 
 Edit `docker-compose.yml`:
@@ -93,6 +123,8 @@ docker run -d \
   --log-opt tag=your-app \
   your-image:latest
 ```
+
+**Note:** Logs are automatically flushed to S3 every 90 seconds (configurable via `AUTO_FLUSH_INTERVAL`).
 
 ## Alternative: Use Published Port
 
@@ -132,3 +164,9 @@ docker-compose down
 ## That's It
 
 Simple standalone setup. Apps use Docker's native GELF logging driver to send logs to BlobSearch.
+
+**Key Features:**
+- ✓ Auto-flush every 90 seconds (configurable)
+- ✓ Real S3 or MinIO support
+- ✓ Native Docker GELF logging
+- ✓ Pre-built images from GitHub

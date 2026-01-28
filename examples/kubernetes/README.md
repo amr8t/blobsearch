@@ -61,6 +61,40 @@ kubectl get svc
 kubectl get daemonset
 ```
 
+## Configuration
+
+### Auto-Flush (Default: Enabled)
+
+Logs are automatically flushed to S3 every 90 seconds by default. The DaemonSet includes:
+
+```yaml
+- name: AUTO_FLUSH
+  value: "true"
+- name: AUTO_FLUSH_INTERVAL
+  value: "90"  # seconds
+```
+
+To customize, edit `blobsearch.yaml` and change the interval:
+
+```yaml
+- name: AUTO_FLUSH_INTERVAL
+  value: "30"  # Flush every 30 seconds for near real-time
+```
+
+Or disable auto-flush for manual control:
+
+```yaml
+- name: AUTO_FLUSH
+  value: "false"
+```
+
+Then manually flush via the API:
+```bash
+curl -X POST http://localhost:30080/flush
+```
+
+See [Auto-Flush Guide](../AUTO_FLUSH_GUIDE.md) for detailed configuration options.
+
 ## Using AWS S3 (Production)
 
 Edit `blobsearch.yaml`:
@@ -178,5 +212,12 @@ The DaemonSet automatically runs one ingestor per node. Each node's pods can sen
 - k3s installs in seconds
 - DaemonSet = one ingestor per node  
 - NodePort = easy access from anywhere
+- Auto-flush every 90 seconds (configurable)
 - Logs go to S3
 - Query with DuckDB
+
+**Key Features:**
+- ✓ Auto-flush enabled by default
+- ✓ One ingestor per node (DaemonSet)
+- ✓ Real S3 or MinIO support
+- ✓ Pre-built images from GitHub

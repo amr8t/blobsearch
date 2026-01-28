@@ -85,6 +85,7 @@ LIMIT 10;
 - **Partitioned** - Hive-style partitioning by date/level
 - **Docker Native** - Auto-collect logs from containers
 - **Dedupe** - Optional deduplication
+- **Auto-Flush** - Configurable automatic flushing (default: 90s)
 
 ## Architecture
 
@@ -247,6 +248,8 @@ spec:
 | `WITH_TIMESTAMPS` | `true` | Parse timestamps from logs |
 | `DEDUPLICATE` | `false` | Enable deduplication |
 | `DEDUP_WINDOW` | `100000` | Dedup cache size |
+| `AUTO_FLUSH` | `true` | Enable automatic periodic flushing |
+| `AUTO_FLUSH_INTERVAL` | `90` | Auto-flush interval in seconds |
 
 ## API
 
