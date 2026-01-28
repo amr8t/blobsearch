@@ -44,6 +44,8 @@ var (
 	dedupWindow       = flag.Int("dedup-window", 100000, "Number of recent hashes to keep for deduplication")
 	autoFlush         = flag.Bool("auto-flush", true, "Enable automatic periodic flushing")
 	autoFlushInterval = flag.Int("auto-flush-interval", 90, "Auto-flush interval in seconds")
+	timestampFields   = flag.String("timestamp-fields", "timestamp,time,@timestamp", "Comma-separated JSON field names to check for timestamp")
+	levelFields       = flag.String("level-fields", "level,severity,severityText", "Comma-separated JSON field names to check for log level")
 )
 
 // LogEntry represents a log entry that will be written to Parquet
@@ -310,10 +312,19 @@ func (li *LogIngestor) autoFlushWorker() {
 	for {
 		select {
 		case <-ticker.C:
+			li.mu.Lock()
+			entryCount := len(li.batch.Entries)
+			li.mu.Unlock()
+
+			if entryCount == 0 {
+				log.Printf("Auto-flush: no data to flush")
+				continue
+			}
+
 			if err := li.Flush(); err != nil {
 				log.Printf("Auto-flush error: %v", err)
 			} else {
-				log.Printf("Auto-flush completed")
+				log.Printf("Auto-flush completed (%d entries flushed)", entryCount)
 			}
 		case <-li.stopAutoFlush:
 			log.Printf("Auto-flush worker stopping")
@@ -649,14 +660,9 @@ func flushBatch(batch *BatchInfo, s3Client *s3.Client) error {
 	}
 
 	// Process each partition group
-	partitionCounter := 0
 	for partitionKey, entries := range partitionGroups {
-		// Generate filename
+		// Generate filename (no part suffix needed - directory structure indicates partition)
 		baseFileName := generateFileName(batch.StartTime, batch.EndTime, batch.BatchNumber)
-		if len(partitionGroups) > 1 {
-			baseFileName = fmt.Sprintf("%s_part%d", baseFileName, partitionCounter)
-		}
-		partitionCounter++
 
 		var fileName string
 		if partitionKey != "unpartitioned" {
@@ -712,30 +718,63 @@ func flushBatch(batch *BatchInfo, s3Client *s3.Client) error {
 }
 
 func extractLevel(message string) string {
-	messageLower := strings.ToLower(message)
+	// Only try JSON extraction if message looks like JSON
+	if !strings.HasPrefix(message, "{") {
+		return "unknown"
+	}
 
-	// Check for JSON structured logs
-	if strings.HasPrefix(message, "{") && strings.Contains(message, `"level"`) {
-		levelPattern := regexp.MustCompile(`"level"\s*:\s*"([^"]+)"`)
-		matches := levelPattern.FindStringSubmatch(message)
+	// Try each configured level field
+	fields := strings.Split(*levelFields, ",")
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+
+		// Check if field exists in message
+		if !strings.Contains(message, fmt.Sprintf(`"%s"`, field)) {
+			continue
+		}
+
+		// Try to extract string value
+		pattern := regexp.MustCompile(fmt.Sprintf(`"%s"\s*:\s*"([^"]+)"`, regexp.QuoteMeta(field)))
+		matches := pattern.FindStringSubmatch(message)
 		if len(matches) > 1 {
-			return strings.ToLower(matches[1])
+			level := strings.ToLower(matches[1])
+			// Normalize common variations
+			switch level {
+			case "warning":
+				return "warn"
+			case "err":
+				return "error"
+			case "trace":
+				return "debug"
+			case "fatal", "critical":
+				return "error"
+			default:
+				return level
+			}
+		}
+
+		// Try to extract number value (e.g., severityNumber)
+		numPattern := regexp.MustCompile(fmt.Sprintf(`"%s"\s*:\s*(\d+)`, regexp.QuoteMeta(field)))
+		numMatches := numPattern.FindStringSubmatch(message)
+		if len(numMatches) > 1 {
+			// Common numeric mappings (syslog-style: 0-7, OTLP: 1-24)
+			num := numMatches[1]
+			switch {
+			case num >= "1" && num <= "4":
+				return "debug"
+			case num >= "5" && num <= "8":
+				return "info"
+			case num >= "9" && num <= "12":
+				return "warn"
+			case num >= "13":
+				return "error"
+			}
 		}
 	}
 
-	// Check for common log level patterns in unstructured logs
-	if strings.Contains(messageLower, "error") || strings.Contains(messageLower, "[error]") {
-		return "error"
-	}
-	if strings.Contains(messageLower, "warn") || strings.Contains(messageLower, "[warn]") {
-		return "warn"
-	}
-	if strings.Contains(messageLower, "notice") || strings.Contains(messageLower, "info") || strings.Contains(messageLower, "[info]") {
-		return "info"
-	}
-	if strings.Contains(messageLower, "debug") || strings.Contains(messageLower, "[debug]") {
-		return "debug"
-	}
 	return "unknown"
 }
 
@@ -760,19 +799,37 @@ func getCompression() []parquet.WriterOption {
 }
 
 func parseTimestamp(logLine string) time.Time {
-	// Try JSON timestamp extraction first (Web App logs)
-	// Format: {"timestamp":"2024-06-03T13:02:04Z",...}
-	if strings.HasPrefix(logLine, "{") && strings.Contains(logLine, `"timestamp"`) {
-		timestampPattern := regexp.MustCompile(`"timestamp":"([^"]+)"`)
-		matches := timestampPattern.FindStringSubmatch(logLine)
-		if len(matches) > 1 {
-			timestampStr := matches[1]
-			// Try RFC3339 formats
-			formats := []string{time.RFC3339, time.RFC3339Nano}
-			for _, format := range formats {
-				if t, err := time.Parse(format, timestampStr); err == nil {
-					if t.Year() > 2000 && t.Year() < 2100 {
-						return t
+	// Try JSON timestamp extraction first if it looks like JSON
+	if strings.HasPrefix(logLine, "{") {
+		fields := strings.Split(*timestampFields, ",")
+		for _, field := range fields {
+			field = strings.TrimSpace(field)
+			if field == "" {
+				continue
+			}
+
+			// Check if field exists
+			if !strings.Contains(logLine, fmt.Sprintf(`"%s"`, field)) {
+				continue
+			}
+
+			// Try to extract timestamp value
+			pattern := regexp.MustCompile(fmt.Sprintf(`"%s"\s*:\s*"([^"]+)"`, regexp.QuoteMeta(field)))
+			matches := pattern.FindStringSubmatch(logLine)
+			if len(matches) > 1 {
+				timestampStr := matches[1]
+				// Try common timestamp formats
+				formats := []string{
+					time.RFC3339,
+					time.RFC3339Nano,
+					"2006-01-02T15:04:05",
+					"2006-01-02 15:04:05",
+				}
+				for _, format := range formats {
+					if t, err := time.Parse(format, timestampStr); err == nil {
+						if t.Year() > 2000 && t.Year() < 2100 {
+							return t
+						}
 					}
 				}
 			}

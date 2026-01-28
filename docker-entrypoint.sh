@@ -32,5 +32,14 @@ CMD="$CMD -dedup-window=$DEDUP_WINDOW"
 CMD="$CMD -auto-flush=$AUTO_FLUSH"
 CMD="$CMD -auto-flush-interval=$AUTO_FLUSH_INTERVAL"
 
+# Add configurable field extraction
+if [ -n "$TIMESTAMP_FIELDS" ]; then
+    CMD="$CMD -timestamp-fields=$TIMESTAMP_FIELDS"
+fi
+
+if [ -n "$LEVEL_FIELDS" ]; then
+    CMD="$CMD -level-fields=$LEVEL_FIELDS"
+fi
+
 # Execute the command
 exec $CMD

@@ -53,7 +53,7 @@ docker run -d -p 8080:8080 \
   -e REGION=us-east-1 \
   ghcr.io/amr8t/blobsearch/ingestor:latest
 
-# Send logs
+# Send logs (any JSON format with timestamp and level fields)
 echo '{"timestamp":"2024-01-15T10:30:00Z","level":"error","message":"Database connection failed"}' | \
   curl -X POST --data-binary @- http://localhost:8080/ingest
 
@@ -78,20 +78,20 @@ LIMIT 10;
 
 ## Features
 
+- **Format Agnostic** - Works with any JSON log format via configurable field extraction
 - **Fast** - 28K+ entries/sec ingestion
 - **Efficient** - Parquet + Snappy (3.7x compression)
 - **Quick Queries** - DuckDB queries in <50ms on 56K logs
-- **S3-Compatible** - AWS S3, MinIO, DigitalOcean Spaces, etc.
-- **Partitioned** - Hive-style partitioning by date/level
-- **Docker Native** - Auto-collect logs from containers
-- **Dedupe** - Optional deduplication
+- **S3-Compatible** - AWS S3, MinIO, DigitalOcean Spaces, R2, etc.
+- **Partitioned** - Hive-style partitioning by date/level (no redundant part suffixes)
 - **Auto-Flush** - Configurable automatic flushing (default: 90s)
+- **Dedupe** - Optional deduplication
 
 ## Architecture
 
 ```
 ┌─────────────┐
-│   Your App  │ → HTTP POST / GELF / CLI
+│   Your App  │ → JSON Logs (any format)
 └──────┬──────┘
        │
        ↓
@@ -231,6 +231,49 @@ spec:
 **Note:** Configure Docker daemon on nodes with GELF driver pointing to `tcp://127.0.0.1:12201`
 
 
+## Field Extraction
+
+BlobSearch is **format-agnostic** and works with any JSON log format. It extracts two key fields for partitioning:
+
+### Timestamp Field
+Used for time-based partitioning (`date=YYYY-MM-DD`). Configure which JSON fields to check:
+
+```bash
+TIMESTAMP_FIELDS="timestamp,time,@timestamp"  # Default
+```
+
+BlobSearch checks each field in order and uses the first one found. Supports RFC3339, RFC3339Nano, and common ISO formats.
+
+**Examples:**
+```json
+{"timestamp": "2024-01-15T10:30:00Z", ...}        # ✓ Works
+{"time": "2024-01-15T10:30:00.123Z", ...}         # ✓ Works
+{"@timestamp": "2024-01-15 10:30:00", ...}        # ✓ Works
+```
+
+### Level Field
+Used for severity-based partitioning (`level=error|warn|info|debug`). Configure which JSON fields to check:
+
+```bash
+LEVEL_FIELDS="level,severity,severityText"  # Default
+```
+
+Supports both string values (`"ERROR"`, `"error"`) and numeric values (syslog/OTLP scales).
+
+**Examples:**
+```json
+{"level": "error", ...}                           # ✓ Works
+{"severity": "ERROR", ...}                        # ✓ Works (normalized to lowercase)
+{"severityText": "WARN", ...}                     # ✓ Works (OpenTelemetry)
+{"severityNumber": 17, ...}                       # ✓ Works (OTLP numeric)
+```
+
+**Common Formats Supported:**
+- Generic JSON logs with `level` field
+- OpenTelemetry (OTEL) logs with `severityText`/`severityNumber`
+- Structured logs with `severity` field
+- Custom formats via field configuration
+
 ## Configuration
 
 ### Ingestor Environment Variables
@@ -250,6 +293,8 @@ spec:
 | `DEDUP_WINDOW` | `100000` | Dedup cache size |
 | `AUTO_FLUSH` | `true` | Enable automatic periodic flushing |
 | `AUTO_FLUSH_INTERVAL` | `90` | Auto-flush interval in seconds |
+| `TIMESTAMP_FIELDS` | `timestamp,time,@timestamp` | Comma-separated JSON field names to check for timestamp |
+| `LEVEL_FIELDS` | `level,severity,severityText` | Comma-separated JSON field names to check for log level |
 
 ## API
 
